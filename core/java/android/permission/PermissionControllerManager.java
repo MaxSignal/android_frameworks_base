@@ -484,7 +484,9 @@ public final class PermissionControllerManager {
     static final class RemoteService extends
             AbstractMultiplePendingRequestsRemoteService<RemoteService, IPermissionController> {
         private static final long UNBIND_TIMEOUT_MILLIS = 10000;
-        private static final long MESSAGE_TIMEOUT_MILLIS = 30000;
+        // slow single-core devices need far longer on first boot (cold PermissionController,
+        // default grants for every package); a timeout here is fatal to system_server.
+        private static final long MESSAGE_TIMEOUT_MILLIS = 300000;
 
         /**
          * Create a connection to the remote service
