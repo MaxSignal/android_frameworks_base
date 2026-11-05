@@ -22,6 +22,7 @@
 #include "thread/ThreadBase.h"
 #include "utils/TimeUtils.h"
 
+#include <cutils/properties.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
@@ -360,6 +361,30 @@ static SkBitmap makeHwCompatible(const FormatInfo& format, const SkBitmap& sourc
 }
 
 
+// PowerVR SGX writes glTexSubImage2D data into an EGLImage sibling with
+// a row pitch other than the gralloc stride its sampler uses, so uploaded
+// bitmaps come out sheared. Copy the pixels in through a CPU lock instead.
+static bool useCpuUpload() {
+    static const bool cpuUpload = property_get_bool("ro.hwui.cpu_bitmap_upload", false);
+    return cpuUpload;
+}
+
+static bool cpuUploadHardwareBitmap(const SkBitmap& bitmap, const sp<GraphicBuffer>& buffer) {
+    void* dst = nullptr;
+    status_t err = buffer->lock(GraphicBuffer::USAGE_SW_WRITE_OFTEN, &dst);
+    if (err != OK || !dst) {
+        ALOGW("cpu upload: lock failed (%d)", err);
+        return false;
+    }
+    const size_t rowBytes = bitmap.width() * bitmap.bytesPerPixel();
+    const size_t dstRowBytes = buffer->getStride() * bitmap.bytesPerPixel();
+    for (int y = 0; y < bitmap.height(); y++) {
+        memcpy(static_cast<uint8_t*>(dst) + y * dstRowBytes, bitmap.getAddr(0, y), rowBytes);
+    }
+    buffer->unlock();
+    return true;
+}
+
 static void createUploader(bool usingGL) {
     static std::mutex lock;
     std::lock_guard _lock{lock};
@@ -382,12 +407,18 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
     if (!format.valid) {
         return nullptr;
     }
+    const bool cpuUpload = useCpuUpload();
+    if (cpuUpload && format.format == GL_LUMINANCE) {
+        format.isSupported = false;  // expand to RGBA before the copy
+    }
 
     SkBitmap bitmap = makeHwCompatible(format, sourceBitmap);
     sp<GraphicBuffer> buffer = new GraphicBuffer(
             static_cast<uint32_t>(bitmap.width()), static_cast<uint32_t>(bitmap.height()),
             format.pixelFormat,
-            GraphicBuffer::USAGE_HW_TEXTURE | GraphicBuffer::USAGE_SW_WRITE_NEVER |
+            GraphicBuffer::USAGE_HW_TEXTURE |
+                    (cpuUpload ? GraphicBuffer::USAGE_SW_WRITE_OFTEN
+                               : GraphicBuffer::USAGE_SW_WRITE_NEVER) |
                     GraphicBuffer::USAGE_SW_READ_NEVER,
             std::string("Bitmap::allocateHardwareBitmap pid [") + std::to_string(getpid()) +
                     "]");
@@ -398,10 +429,16 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
         return nullptr;
     }
 
-    createUploader(usingGL);
+    if (cpuUpload) {
+        if (!cpuUploadHardwareBitmap(bitmap, buffer)) {
+            return nullptr;
+        }
+    } else {
+        createUploader(usingGL);
 
-    if (!sUploader->uploadHardwareBitmap(bitmap, format, buffer)) {
-        return nullptr;
+        if (!sUploader->uploadHardwareBitmap(bitmap, format, buffer)) {
+            return nullptr;
+        }
     }
     return Bitmap::createFrom(buffer, bitmap.colorType(), bitmap.refColorSpace(),
                               bitmap.alphaType(), Bitmap::computePalette(bitmap));
