@@ -49,6 +49,7 @@ SkColorType PixelFormatToColorType(android::PixelFormat format) {
     switch (format) {
         case PIXEL_FORMAT_RGBX_8888:    return kRGB_888x_SkColorType;
         case PIXEL_FORMAT_RGBA_8888:    return kRGBA_8888_SkColorType;
+        case PIXEL_FORMAT_BGRA_8888:    return kBGRA_8888_SkColorType;
         case PIXEL_FORMAT_RGBA_FP16:    return kRGBA_F16_SkColorType;
         case PIXEL_FORMAT_RGB_565:      return kRGB_565_SkColorType;
         case PIXEL_FORMAT_RGBA_1010102: return kRGBA_1010102_SkColorType;
